@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Empty Ballot Lines</title>
+<meta name="description" content="Which 2026 state legislative seats have no major-party competition, in every state with an election.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;600;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">2026 state legislative elections</p>
+    <h1>Empty ballot lines</h1>
+    <p class="lede">How many seats will be decided before anyone votes in November, in each of the 46 states holding legislative elections.</p>
+    <p class="meta" id="meta">Loading data…</p>
+  </header>
+
+  <section class="kpis" id="kpis" aria-label="National totals"></section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2 id="map-title">Share of seats without major-party competition</h2>
+      <div class="seg" role="radiogroup" aria-label="Map metric">
+        <button role="radio" data-metric="nocomp" aria-checked="true">No D vs. R race</button>
+        <button role="radio" data-metric="unopposed" aria-checked="false">No opponent at all</button>
+      </div>
+    </div>
+    <div id="map" class="map"></div>
+    <div id="legend" class="legend"></div>
+    <p class="note">Tap or click a state for its chambers and districts. Gray states (LA, MS, NJ, VA) hold legislative elections in odd years.</p>
+  </section>
+
+  <section class="card" id="detail" hidden>
+    <div class="card-head">
+      <h2 id="detail-title"></h2>
+      <button class="link" id="detail-close">Close</button>
+    </div>
+    <div id="detail-kpis" class="mini-kpis"></div>
+    <div id="chambers"></div>
+    <div class="race-tools">
+      <label><input type="checkbox" id="only-gaps" checked> Only races without major-party competition</label>
+      <input type="search" id="race-search" placeholder="Search district or candidate" aria-label="Search district or candidate">
+    </div>
+    <ul id="races" class="races"></ul>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>All states</h2><span class="hint">Sort by any column</span></div>
+    <div class="table-wrap"><table id="rank"></table></div>
+  </section>
+
+  <section class="card prose">
+    <h2>How to read this</h2>
+    <dl>
+      <dt>No major-party competition</dt>
+      <dd>The general-election ballot does not have both a Democrat and a Republican for the seat. That includes seats where one candidate runs alone, seats where only minor-party or independent candidates oppose them, and top-two states where both finalists share a party. This matches Ballotpedia's "major party competition" measure.</dd>
+      <dt>No opponent at all</dt>
+      <dd>No more candidates than seats, so the race is settled once filing closes. Write-in candidates are not counted.</dd>
+      <dt>Not yet listed</dt>
+      <dd>The source page has no candidates for the district yet. These seats are left out of every percentage.</dd>
+    </dl>
+    <p>Data comes from each chamber's 2026 election page on Wikipedia (CC BY-SA 4.0), refreshed nightly. Multi-member districts count every seat. Nebraska's legislature is officially nonpartisan; party labels there come from the candidates' known affiliations. Check a district against your state election office before acting on it.</p>
+    <p class="downloads">Download: <a href="data/seats.csv" download>seats.csv</a> · <a href="data/seats.json" download>seats.json</a></p>
+    <div id="coverage"></div>
+  </section>
+</main>
+<div id="tip" class="tip" role="tooltip" hidden></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/topojson/3.0.2/topojson.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
