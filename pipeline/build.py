@@ -98,7 +98,7 @@ def page_html(state, chamber):
     title = f"{YEAR} {state} {chamber} election"
     d = api(action="parse", page=title, prop="text", redirects=1)
     if "error" in d:  # title differs from our guess: take the first search hit for this year and state
-        hits = api(action="opensearch", search=title, limit=5)[1]
+        hits = api(action="opensearch", search=title.replace(" State ", " "), limit=5)[1]  # "PA State Senate" is "PA Senate"
         hit = next((h for h in hits if h.startswith(f"{YEAR} {state} ")), None)
         if not hit:
             return None, None
