@@ -44,10 +44,11 @@ class StatesTest(unittest.TestCase):
                 + "</table><font><b>State Representative</b></font><table>" + hdr
                 + row.format(d="13", last="Gaillard", first="Brice", p="WRI", inc="", s="Qualified")
                 + row.format(d="&nbsp;", last="Rutledge", first="Shemiah", p="DEM", inc="", s="Withdrew")
-                + row.format(d="&nbsp;", last="Smith", first="Ann", p="NPA", inc="", s="Qualified") + "</table>")
+                + row.format(d="&nbsp;", last="Smith", first="Ann", p="NPA", inc="", s="Qualified")
+                + row.format(d="14", last="Elected", first="Already", p="REP", inc="", s="Unopposed") + "</table>")
         self.assertEqual(states.florida(html), [
             (S, "District 2", "Lauren Donahoo", "DEM"), (S, "District 2", "Jay Trumbull", "REP"),
-            (H, "District 13", "Ann Smith", "NPA")])
+            (H, "District 13", "Ann Smith", "NPA"), (H, "District 14", "Already Elected", "REP")])
 
     def test_minnesota(self):
         text = ("MN;;;0188;State Representative District 1A;1A;0301;John Burkel;;;R;0;174;0;0.00;0\n"
@@ -60,24 +61,12 @@ class StatesTest(unittest.TestCase):
         races = rows_to_races([r[1:] for r in rows if r[0] == H])
         self.assertEqual((races[0]["category"], races[0]["majors"]), ("two_party", "DR"))  # bare R and DFL codes
 
-    def test_massachusetts(self):
-        html = """<main><h2>Councillor</h2><h3>First District</h3><p>Not Counted, 1 St., Town, Democratic</p>
-        <h2>Senator in General Court</h2><h3>First Bristol &amp; Plymouth District</h3>
-        <p>Michael J. Rodrigues, 428 Sanford Rd., Westport, Democratic</p>
-        <p>John Smith, Jr., 1 Main St., Fall River, Republican</p>
-        <h2>Representative in General Court</h2><h3>Second Barnstable District</h3>
-        <p>Joe B. Glynn, 822 Route 28, Yarmouth, Gulf War Veteran</p>
-        <h2>District Attorney</h2><h3>Cape District</h3><p>Not Counted, 2 St., Town, Republican</p></main>"""
-        self.assertEqual(states.massachusetts(html), [
-            (S, "First Bristol & Plymouth District", "Michael J. Rodrigues", "Democratic"),
-            (S, "First Bristol & Plymouth District", "John Smith, Jr.", "Republican"),
-            (H, "Second Barnstable District", "Joe B. Glynn", "Gulf War Veteran")])
-
     def test_new_mexico(self):
         head = ["Contest", "Contest", "District", "Filing County", "Name", "Party", "Ballot Order", "Status"]
         def tr(*c):
             return "<tr>" + "".join(f"<td>{x}</td>" for x in c) + "</tr>"
-        html = ("<table>" + "<tr>" + "".join(f"<th>{h}</th>" for h in head) + "</tr>"
+        html = ("<table><tr><td><table><tr><td>Export: Excel PDF CSV</td></tr></table></td></tr>"
+                + "<tr>" + "".join(f"<th>{h}</th>" for h in head) + "</tr>"
                 + tr("State RepresentativeDISTRICT 1", "State Representative", "DISTRICT 1", "San Juan", "ROD MONTOYA", "REP", "1", "Qualified")
                 + tr("State RepresentativeDISTRICT 4", "State Representative", "DISTRICT 4", "San Juan", "JOE H", "REP", "1", "Withdrawn")
                 + tr("State RepresentativeDISTRICT 4", "State Representative", "DISTRICT 4", "San Juan", "WRITE IN", "DTS", "99", "Qualified")

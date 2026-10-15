@@ -62,7 +62,7 @@ def florida(html):
                 continue
             district = txt(tds[0]) or district  # blank on a district's later candidates
             m = re.match(r"(.*?),\s*(.*?)\s*\((\w+)\)", txt(tds[1]))
-            if m and txt(tds[2]) == "Qualified" and m.group(3) != "WRI":
+            if m and txt(tds[2]) in ("Qualified", "Unopposed") and m.group(3) != "WRI":  # Unopposed = elected outright
                 rows.append((chamber, f"District {district}", f"{m.group(2).strip()} {m.group(1).strip()}", m.group(3)))
     return rows
 
@@ -79,31 +79,15 @@ def minnesota(text):
     return rows
 
 
-def massachusetts(html):
-    """h2 office, h3 district, then one <p> per candidate: 'Name, street, town, Party'."""
-    rows, chamber, district = [], None, ""
-    main = BeautifulSoup(html, "html.parser")
-    for el in main.find_all(["h2", "h3", "p"]):
-        if el.name == "h2":
-            chamber = {"Senator in General Court": SENATE, "Representative in General Court": HOUSE}.get(txt(el))
-        elif el.name == "h3":
-            district = txt(el)
-        elif chamber and district:
-            parts = [p.strip() for p in txt(el).rsplit(",", 3)]  # names can hold commas; the last 3 fields can't
-            if len(parts) == 4 and parts[0]:
-                rows.append((chamber, district, parts[0], parts[3]))
-    return rows
-
 
 def new_mexico(html):
-    """Largest table; columns found by header name."""
-    tables = BeautifulSoup(html, "html.parser").find_all("table")
-    table = max(tables, key=lambda t: len(t.find_all("tr")))
-    trs = table.find_all("tr")
-    head = [txt(c) for c in trs[0].find_all(["th", "td"])]
+    """The candidate grid; columns found by header name."""
+    trs = BeautifulSoup(html, "html.parser").find_all("tr")
+    i = next(i for i, tr in enumerate(trs) if {"Status", "Ballot Order"} <= {txt(c) for c in tr.find_all(["th", "td"])})
+    head = [txt(c) for c in trs[i].find_all(["th", "td"])]
     col = {h: head.index(h) for h in ("District", "Name", "Party", "Ballot Order", "Status")}
     rows = []
-    for tr in trs[1:]:
+    for tr in trs[i + 1:]:
         c = [txt(td) for td in tr.find_all(["td", "th"])]
         if len(c) > col["Status"] and c[1] == "State Representative" and c[col["Status"]] == "Qualified" \
                 and c[col["Ballot Order"]] != "99":  # 99 = write-in
@@ -119,8 +103,6 @@ SOURCES = {
                      "?elecid=20261103-GEN&OfficeGroup=LEG&StatusCode=ALL&OrderBy=OFF"]),
     "MN": (minnesota, ["https://electionresultsfiles.sos.mn.gov/20261103/LegislativeByDistrict.txt",
                        "https://electionresultsfiles.sos.mn.gov/20261103/stsenate.txt"]),
-    "MA": (massachusetts, ["https://www.sec.state.ma.us/divisions/elections/research-and-statistics/"
-                           "2026-state-election-candidates.htm"]),
     "NM": (new_mexico, ["https://candidateportal.servis.sos.state.nm.us/CandidateList.aspx"]),
 }
 

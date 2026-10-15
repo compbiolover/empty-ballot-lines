@@ -2,7 +2,7 @@
 
 A dashboard of every 2026 state legislative race in the 46 states holding elections (88 chambers, about 6,100 seats), showing which seats have no Democrat-vs-Republican race and which have no opponent at all.
 
-- `pipeline/states.py` reads official candidate lists from state election offices (CO, DE, FL, MA, MN, NM). Add a state by writing a reader that returns `(chamber, district, name, party)` rows and listing it in `SOURCES`.
+- `pipeline/states.py` reads official candidate lists from state election offices (CO, DE, FL, MN, NM). Add a state by writing a reader that returns `(chamber, district, name, party)` rows and listing it in `SOURCES`.
 - `pipeline/build.py` uses a state's official list when it has one, otherwise the chamber's "2026 ⟨State⟩ ⟨Chamber⟩ election" page on Wikipedia, and writes `site/data/seats.json` and `seats.csv`.
 - `site/` is a static D3 page: national totals, a state map, a sortable state table, and a drill-down to every district and candidate.
 - `.github/workflows/refresh.yml` runs the tests and the pipeline daily, commits the new data, and deploys `site/` to GitHub Pages.
