@@ -83,12 +83,13 @@ def minnesota(text):
 def new_mexico(html):
     """The candidate grid; columns found by header name."""
     trs = BeautifulSoup(html, "html.parser").find_all("tr")
-    i = next(i for i, tr in enumerate(trs) if {"Status", "Ballot Order"} <= {txt(c) for c in tr.find_all(["th", "td"])})
-    head = [txt(c) for c in trs[i].find_all(["th", "td"])]
+    own = lambda tr: tr.find_all(["th", "td"], recursive=False)  # outer layout rows hold the whole grid
+    i = next(i for i, tr in enumerate(trs) if {"Status", "Ballot Order"} <= {txt(c) for c in own(tr)})
+    head = [txt(c) for c in own(trs[i])]
     col = {h: head.index(h) for h in ("District", "Name", "Party", "Ballot Order", "Status")}
     rows = []
     for tr in trs[i + 1:]:
-        c = [txt(td) for td in tr.find_all(["td", "th"])]
+        c = [txt(td) for td in own(tr)]
         if len(c) > col["Status"] and c[1] == "State Representative" and c[col["Status"]] == "Qualified" \
                 and c[col["Ballot Order"]] != "99":  # 99 = write-in
             rows.append((HOUSE, c[col["District"]].title(), c[col["Name"]], c[col["Party"]]))
