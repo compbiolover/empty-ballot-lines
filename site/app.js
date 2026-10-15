@@ -96,11 +96,16 @@ function renderMap(atlas) {
   const svg = d3.select("#map").selectAll("svg").data([0]).join("svg")
     .attr("viewBox", "0 0 975 610").attr("role", "img")
     .attr("aria-label", "US map shaded by share of 2026 state legislative seats without competition");
+  // diagonal stripes keep "no election this year" visibly different from "no data yet"
+  svg.selectAll("defs").data([0]).join("defs").html(
+    '<pattern id="no-election" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">' +
+    '<rect width="6" height="6" style="fill:var(--surface)"/><rect width="2.5" height="6" style="fill:var(--na)"/></pattern>');
   svg.selectAll("path.state").data(features, (f) => f.id).join("path")
     .attr("d", path)
     .attr("class", (f) => `state${NO_ELECTION.has(f.properties.name) ? " na" : ""}${stats.get(f.properties.name)?.code === ui.selected ? " sel" : ""}`)
     .attr("fill", (f) => {
       const s = stats.get(f.properties.name);
+      if (NO_ELECTION.has(f.properties.name)) return "url(#no-election)";
       return s && !isNaN(s[key]) ? color(s[key]) : css("--na");
     })
     .on("pointermove", (ev, f) => tip(ev, f.properties.name, stats.get(f.properties.name)))
@@ -114,7 +119,10 @@ function renderMap(atlas) {
   lg.append("span").text(pct(max));
   const na = lg.append("span").style("white-space", "nowrap");
   na.append("span").attr("class", "na-sw");
-  na.append("span").text(" No election or no data");
+  na.append("span").text(" No data yet");
+  const ne = lg.append("span").style("white-space", "nowrap");
+  ne.append("span").attr("class", "na-sw hatch");
+  ne.append("span").text(" No legislative election in 2026");
 }
 
 function tip(ev, name, s) {
@@ -188,6 +196,12 @@ function select(code, scroll = true) {
     const name = box.append("div").attr("class", "name");
     name.append("b").text(chamber);
     name.append("span").text(`${pct(cs.nocompPct)} without a D vs. R race · ${num(cs.seats)} seats`);
+    const info = DATA.meta.chambers.find((c) => c.state === code && c.chamber === chamber);
+    if (info?.page) {
+      const href = info.source === "state" ? info.page : `https://en.wikipedia.org/wiki/${encodeURIComponent(info.page.replace(/ /g, "_"))}`;
+      box.append("a").attr("class", "src").attr("href", href).attr("target", "_blank").attr("rel", "noopener")
+        .text(info.source === "state" ? "Source: state election office" : "Source: Wikipedia");
+    }
     box.append("div").attr("class", "stack").attr("role", "img")
       .attr("aria-label", SEGMENTS.map(([k, l]) => `${l}: ${cs[k]}`).join(", "))
       .selectAll("i").data(SEGMENTS.filter(([k]) => cs[k] > 0)).join("i")

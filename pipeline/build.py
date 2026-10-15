@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 
+import states
+
 YEAR = 2026
 API = "https://en.wikipedia.org/w/api.php"
 UA = f"empty-ballot-dashboard/1.0 (https://github.com/{os.environ.get('GITHUB_REPOSITORY', '')})"
@@ -128,6 +130,11 @@ def lines(cell):
 
 def party(s):
     """'R', 'D' or 'O'. Fusion/cross-nominated labels take the first major party named."""
+    code = s.strip().strip(".").upper()  # official lists use bare codes
+    if code in ("R", "REP", "GOP"):
+        return "R"
+    if code in ("D", "DEM", "DFL"):
+        return "D"
     s = s.lower()
     hits = [(s.find(k), code) for k, code in
             (("republican", "R"), ("democrat", "D"), ("dfl", "D"), ("farmer", "D")) if k in s]
@@ -391,6 +398,22 @@ def parse_page(html):
     return list(merged.values())
 
 
+def rows_to_races(rows):
+    """Races from (district, name, party label) rows of an official list; one seat per district."""
+    by = {}
+    for district, name, label in rows:
+        c = person(name, label)
+        by.setdefault(district, [])
+        if c:
+            by[district].append(c)
+    out = []
+    for district, cands in by.items():
+        cat, majors = classify(cands, 1)  # shortcut: all current official readers are single-member states
+        out.append({"district": district, "seats": 1, "incumbent_party": "", "status": "",
+                    "candidates": cands, "category": cat, "majors": majors})
+    return out
+
+
 # ---------- main ----------
 
 def main():
@@ -402,22 +425,34 @@ def main():
             for r in json.load(f)["races"]:
                 prev.setdefault((r["state"], r["chamber"]), []).append(r)
 
+    official = {}  # state code -> rows from its election office, fetched once per state
     races, chambers = [], []
     for code, state, chamber in CHAMBERS:
-        info = {"state": code, "state_name": state, "chamber": chamber, "page": None, "stale": False, "error": None}
-        try:
-            info["page"], html = page_html(state, chamber)
-            rs = parse_page(html) if html else []
-        except (urllib.error.URLError, TimeoutError, KeyError, ValueError) as e:
-            rs, info["error"] = [], str(e)
-        if not rs and prev.get((code, chamber)):  # keep last good data rather than blanking a chamber
+        info = {"state": code, "state_name": state, "chamber": chamber, "page": None, "stale": False, "error": None,
+                "source": "wikipedia"}
+        if code not in official:
+            try:
+                official[code] = (states.fetch_state(code), None)
+            except Exception as e:  # a broken state site must not stop the run; fall back to Wikipedia
+                official[code] = ([], f"state source: {e}")
+        rows, info["error"] = official[code]
+        rs = rows_to_races([r[1:] for r in rows if r[0] == chamber])
+        if rs:
+            info["source"], info["page"] = "state", states.SOURCES[code][1][0]
+        else:
+            try:
+                info["page"], html = page_html(state, chamber)
+                rs = parse_page(html) if html else []
+            except (urllib.error.URLError, TimeoutError, KeyError, ValueError) as e:
+                rs, info["error"] = [], str(e)
+        if not rs and info["error"] and prev.get((code, chamber)):  # a fetch failed: keep last good data
             rs, info["stale"] = prev[(code, chamber)], True
         for r in rs:
             r.update(state=code, chamber=chamber, upper="Senate" in chamber)
         info["races"] = len(rs)
         info["seats"] = sum(r["seats"] for r in rs)
         info["unknown_seats"] = sum(r["seats"] for r in rs if r["category"] == "unknown")
-        print(f"{code} {chamber:26} races={info['races']:4} seats={info['seats']:4}"
+        print(f"{code} {chamber:26} races={info['races']:4} seats={info['seats']:4} {info['source']}"
               f"{' STALE' if info['stale'] else ''}{' ERROR ' + info['error'] if info['error'] else ''}")
         races += rs
         chambers.append(info)
@@ -427,7 +462,8 @@ def main():
         sys.exit("No races parsed; leaving existing data untouched.")
 
     meta = {"generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "year": YEAR,
-            "source": "Wikipedia chamber election pages (CC BY-SA 4.0)", "chambers": chambers}
+            "source": "State election office candidate lists where available, otherwise Wikipedia chamber election "
+                      "pages (CC BY-SA 4.0)", "chambers": chambers}
     with open(prev_path, "w") as f:
         json.dump({"meta": meta, "races": races}, f, separators=(",", ":"))
     with open(os.path.join(OUT, "seats.csv"), "w", newline="") as f:
