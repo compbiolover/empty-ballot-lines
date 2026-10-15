@@ -5,6 +5,7 @@ MediaWiki parse API. Each page carries a district table (incumbent, status, cand
 
 Run: python pipeline/build.py
 """
+import colorsys
 import csv
 import json
 import os
@@ -16,7 +17,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString, Tag
 
 YEAR = 2026
 API = "https://en.wikipedia.org/w/api.php"
@@ -133,14 +134,113 @@ def party(s):
     return min(hits)[1] if hits else "O"
 
 
-def candidates(cell):
-    out = []
-    for line in lines(cell):
-        m = re.match(r"^(.*?)\s*\(([^()]*)\)\s*$", line)
-        if not m or "write-in" in line.lower():  # write-ins are not on the ballot line
-            continue
-        out.append({"name": m.group(1).strip(" '*"), "party": party(m.group(2)), "label": m.group(2)})
+COLOR = re.compile(r"color\s*:\s*(#[0-9a-f]{3}(?:[0-9a-f]{3})?)\b", re.I)
+SKIP_ROW = re.compile(r"^(no candidate|none|vacant|n/?a)\b|^[-—–]+$", re.I)
+EXCLUDE = re.compile(r"primary|special|runoff|caucus|convention|recall|voided|nominat", re.I)
+GENERIC = {"district", "house", "senate", "state", "of", "representatives", "representative", "delegates",
+           "assembly", "election", "elections", "general", "results", "result", "the", "s", "legislative", "ld",
+           "hd", "sd", "ad", "legislature", "and"}
+STATE_WORDS = {w for _, s, _ in CHAMBERS for w in s.lower().split()} | {"louisiana", "mississippi", "jersey", "virginia"}
+
+
+def color_party(hexcol):
+    """Party from a Wikipedia party-colour swatch: blue is Democratic, red is Republican, anything else Other."""
+    h = hexcol.lstrip("#")
+    h = "".join(c * 2 for c in h) if len(h) == 3 else h
+    hue, light, sat = colorsys.rgb_to_hls(*(int(h[i:i + 2], 16) / 255 for i in (0, 2, 4)))
+    if sat < 0.35 or not 0.1 < light < 0.85:
+        return "O"
+    hue *= 360
+    return "D" if 185 <= hue <= 260 else "R" if hue <= 15 or hue >= 340 else "O"
+
+
+def person(name, label="", col=None):
+    """A candidate dict, or None for write-ins and blank slots. TBD stays, with an unknown party."""
+    name = re.sub(r"\s*\((incumbent|inc\.|presumptive)\)", "", name, flags=re.I).strip(" '*")
+    if not name or "write-in" in f"{name} {label}".lower() or SKIP_ROW.match(name):
+        return None
+    if label.upper() in ("", "TBD") and name.upper() == "TBD":
+        return {"name": name, "party": "?", "label": "TBD"}  # a TBD under a named party keeps that party
+    p = party(label) if label else color_party(col) if col else "?"
+    if label and p == "O" and col:  # an unhelpful label such as a nickname: trust the swatch
+        p = color_party(col)
+    return {"name": name, "party": p, "label": label or {"D": "Democratic", "R": "Republican"}.get(p, "")}
+
+
+def swatch_items(node):
+    """Split a cell fragment at each party-colour swatch (▌) into (text, colour) pairs."""
+    out, buf, col = [], [], None
+    for el in node.descendants:
+        if isinstance(el, Tag):
+            m = COLOR.search(el.get("style", ""))
+            if m and el.name == "span" and not text(el):
+                if clean("".join(buf)):
+                    out.append((clean("".join(buf)), col))
+                buf, col = [], m.group(1)
+        elif type(el) is NavigableString:  # skips <style>, comments
+            buf.append(str(el))
+    if clean("".join(buf)):
+        out.append((clean("".join(buf)), col))
     return out
+
+
+def candidates(cell):
+    items = cell.find_all("li")
+    if not items:
+        parts = re.split(r"<br\s*/?>", str(cell), flags=re.I)
+        items = [BeautifulSoup(p, "html.parser") for p in parts] if len(parts) > 1 else [cell]
+    out = []
+    for item in items:
+        for line, col in swatch_items(item):
+            m = re.match(r"^(.*?)\s*\(([^()]*)\)\s*$", line)
+            if m and m.group(2).lower() in ("incumbent", "inc.", "presumptive"):
+                m = None
+            c = person(m.group(1), m.group(2), col) if m else person(line, "", col)
+            if c:
+                out.append(c)
+    return out
+
+
+def district_key(s):
+    """Comparable district id: 'Connecticut's 1st House district election, 2026' and 'District 1' both give '1'."""
+    s = re.sub(r"\b(19|20)\d\d\b", " ", s.lower())
+    s = re.sub(r"(\d+)(st|nd|rd|th)\b", r"\1", s)
+    toks = [t for t in re.findall(r"\d+[a-z]?\b|[a-z]+", s) if t not in GENERIC and t not in STATE_WORDS]
+    return " ".join(toks) if any(t[0].isdigit() for t in toks) else None
+
+
+def parse_boxes(soup):
+    """General-election result boxes ({{Election box}}), one per district section."""
+    races = {}
+    for t in soup.find_all("table"):
+        first = t.find(["th", "td"])
+        if not t.find("tr", class_="vcard") or (first and re.match(r"district|seat", text(first), re.I)):
+            continue  # not a result box, or a whole-chamber district table (handled by parse_table)
+        cap = text(t.caption) if t.caption else ""
+        heads = [text(h) for h in t.find_all_previous(["h2", "h3", "h4", "h5", "h6"], limit=4)]
+        if EXCLUDE.search(cap) or (heads and EXCLUDE.search(heads[0])):
+            continue
+        key = district_key(cap) or next((k for k in map(district_key, heads) if k), None)
+        if not key or key in races:
+            continue
+        rows = t.find_all("tr")
+        sections = [i for i, tr in enumerate(rows) if not tr.find("td") and re.match(r"general election", text(tr), re.I)]
+        cands = []
+        for tr in rows[sections[0] if sections else 0:]:  # a box can hold the primary and the general
+            fn = tr.find(class_="fn") if "vcard" in (tr.get("class") or []) else None
+            if not fn:
+                continue
+            org = tr.find(class_="org")
+            swatch = tr.find("td", style=COLOR)
+            c = person(text(fn), text(org) if org else "", COLOR.search(swatch["style"]).group(1) if swatch else None)
+            if c:
+                cands.append(c)
+        m = re.search(r"(\d+)\s+to be elected", cap, re.I)
+        seats = int(m.group(1)) if m else 1  # shortcut: multi-member boxes without "N to be elected" count as 1 seat
+        cat, majors = classify(cands, seats)
+        races[key] = {"district": f"District {key.title()}", "seats": seats, "incumbent_party": "", "status": "",
+                      "candidates": cands, "category": cat, "majors": majors}
+    return list(races.values())
 
 
 def span(cell, attr):
@@ -177,8 +277,8 @@ def grid(table):
 
 def classify(cands, seats):
     majors = {c["party"] for c in cands} & {"D", "R"}
-    if not cands:
-        cat = "unknown"  # empty cell: Wikipedia hasn't listed anyone yet, so don't count it
+    if not cands or any(c["party"] == "?" for c in cands):
+        cat = "unknown"  # nobody listed yet, a slot still TBD, or a party we couldn't read: don't guess
     elif len(cands) <= seats:
         cat = "unopposed"
     elif majors == {"D", "R"}:
@@ -189,12 +289,17 @@ def classify(cands, seats):
 
 
 def parse_table(table):
+    h = table.find_previous(["h2", "h3", "h4", "h5", "h6"])
+    if EXCLUDE.search((text(table.caption) if table.caption else "") + " " + (text(h) if h else "")):
+        return []  # primary-results tables list district + candidates too
     g = grid(table)
     n = next((i for i, r in enumerate(g) if any(c.name == "td" for c in r)), 0)
     if not n:
         return []
     width = max(len(r) for r in g[:n])
     labels = [" ".join(dict.fromkeys(text(r[i]) for r in g[:n] if i < len(r))).lower() for i in range(width)]
+    if EXCLUDE.search(" ".join(labels)):
+        return []  # title row inside the header, e.g. "... Democratic primary"
     if not re.search(r"district|seat|constituency", labels[0]):
         return []  # summary or per-race result tables, not the district list
     cand_cols = [i for i, l in enumerate(labels) if "candidate" in l]
@@ -206,15 +311,22 @@ def parse_table(table):
         return next((i for i, l in enumerate(labels) if i not in (0, cand) and any(w in l for w in words)), None)
 
     member, inc_party, status, position = col("member", "incumbent"), col("party"), col("status"), col("position")
+    cand_party = cand - 1 if "party" in labels[cand - 1] else None  # PA-style: one candidate per row, party beside it
     races = {}
     for row in g[n:]:
         if cand >= len(row) or row[cand].name != "td":
             continue
-        key = id(row[cand])  # rows sharing one candidates cell are one (multi-member) race
-        if key in races:
-            races[key]["rows"] += 1
-            continue
         get = lambda i: row[i] if i is not None and i < len(row) else None
+        cands = candidates(row[cand])
+        if cand_party is not None and len(cands) == 1 and cands[0]["party"] == "?":
+            swatch = next((COLOR.search(c.get("style", "")) for c in row[:cand_party] if COLOR.search(c.get("style", ""))), None)
+            cands = [c for c in [person(cands[0]["name"], text(row[cand_party]), swatch and swatch.group(1))] if c]
+        shared = span(row[cand], "rowspan") > 1  # one candidates cell over several member rows: a multi-member race
+        key = id(row[cand]) if shared else (id(row[0]), text(get(position)) if get(position) is not None else "")
+        if key in races:  # same race again: another member row, or another candidate row (PA-style)
+            races[key]["rows"] += shared
+            races[key]["candidates"] += [] if shared else cands
+            continue
         district = text(row[0])
         if get(position) is not None and text(row[position]):
             district = f"{district} (Position {text(row[position])})"
@@ -224,7 +336,7 @@ def parse_table(table):
             "members": len(lines(get(member))) if get(member) is not None else 1,
             "incumbent_party": party(text(get(inc_party))) if get(inc_party) is not None else "",
             "status": text(get(status)) if get(status) is not None else "",
-            "candidates": candidates(row[cand]),
+            "candidates": cands,
         }
     out = []
     for r in races.values():
@@ -254,35 +366,29 @@ def parse_infobox(box):
             parties, names = parties[:1], names[:1]
         else:
             parties = []  # keep the seat, as "unknown"
-    cands = [{"name": re.sub(r"\s*\(presumptive\)", "", names[i]) if i < len(names) else "TBD",
-              "party": party(p), "label": p} for i, p in enumerate(parties)]
+    cands = [c for c in (person(names[i] if i < len(names) else "TBD", p) for i, p in enumerate(parties)) if c]
     cat, majors = classify(cands, 1)
     return {"district": "", "seats": 1, "incumbent_party": "", "status": "", "candidates": cands,
             "category": cat, "majors": majors}
 
 
 def parse_page(html):
+    """Races from three layouts Wikipedia uses, merged by district: a district table, per-district
+    election boxes, and per-district infoboxes. The first source that names the candidates wins."""
     soup = BeautifulSoup(html, "html.parser")
-    races, seen = [], set()
-    for t in soup.find_all("table"):
-        for r in parse_table(t):
-            if r["district"] not in seen:
-                seen.add(r["district"])
-                races.append(r)
-    if races:
-        return races
-    # No district table: fall back to the first infobox under each "District N" heading.
+    table = [r for t in soup.find_all("table") for r in parse_table(t)]
+    infobox = []
     for box in soup.select("table.infobox"):
         h = box.find_previous(["h2", "h3"])
         district = text(h) if h else ""
-        if not re.match(r"district\b", district, re.I) or district in seen:
-            continue
-        seen.add(district)
-        r = parse_infobox(box)
-        if r:
-            r["district"] = district
-            races.append(r)
-    return races
+        if re.match(r"district\b", district, re.I) and not EXCLUDE.search(district) and not re.search(r"\d{4}", district):
+            infobox.append({**parse_infobox(box), "district": district})
+    known = lambda rs: [r for r in rs if r["category"] != "unknown"]
+    merged = {}
+    boxes = parse_boxes(soup)
+    for r in known(table) + known(boxes) + known(infobox) + table + boxes + infobox:
+        merged.setdefault(district_key(r["district"]) or r["district"], r)
+    return list(merged.values())
 
 
 # ---------- main ----------

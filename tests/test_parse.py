@@ -3,7 +3,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pipeline"))
-from build import parse_page, party  # noqa: E402
+from build import district_key, parse_page, party  # noqa: E402
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "chamber.html")
 
@@ -17,7 +17,7 @@ class ParseTest(unittest.TestCase):
     def test_ignores_summary_table_and_finds_all_races(self):
         self.assertEqual(sorted(self.races), sorted([
             "District 1", "District 6", "District 20", "District 28", "District 40",
-            "LD 3", "LD 9 (Position 1)", "LD 9 (Position 2)", "LD 12"]))
+            "LD 3", "LD 9 (Position 1)", "LD 9 (Position 2)", "LD 12", "PA 1", "PA 3"]))
 
     def test_single_member_categories(self):
         r = self.races
@@ -53,6 +53,38 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(r["District 11"]["candidates"][0]["name"], "Bo Watson")
         self.assertEqual((r["District 23"]["category"], r["District 23"]["majors"]), ("one_party", "R"))
         self.assertEqual((r["District 29"]["category"], r["District 29"]["majors"]), ("unopposed", "D"))
+
+    def test_boxes_swatches_and_merge(self):
+        with open(os.path.join(os.path.dirname(FIXTURE), "boxes.html")) as f:
+            r = {district_key(x["district"]): x for x in parse_page(f.read())}
+        self.assertNotIn("106", r)  # special election skipped
+        self.assertEqual(r["2"]["candidates"][0]["name"], "Ray Jeffers")  # PA primary table ignored, NC box wins
+        # CO swatch-only candidates
+        self.assertEqual((r["1"]["category"], r["1"]["majors"]), ("two_party", "DR"))
+        self.assertEqual([c["party"] for c in r["1"]["candidates"]], ["D", "R"])
+        self.assertEqual((r["10"]["category"], r["10"]["majors"]), ("unopposed", "D"))
+        self.assertEqual((r["38"]["category"], r["38"]["majors"]), ("one_party", "D"))  # Libertarian yellow is Other
+        # CO row 40 is empty, so the NC-style general box for district 40 wins, not its primary
+        self.assertEqual([c["name"] for c in r["40"]["candidates"]], ["Ed Goodwin", "Claude (Dorsey) Harris"])
+        self.assertEqual(r["40"]["category"], "two_party")
+        # WA: only the general-election rows; write-ins dropped; a TBD slot makes the race unknown
+        self.assertEqual([c["name"] for c in r["1 position 1"]["candidates"]], ["Davina Duerr", "Maggie Wang"])
+        self.assertEqual(r["1 position 2"]["category"], "unknown")
+        # CT: dated primary skipped, district-captioned box read
+        self.assertEqual((r["4"]["category"], r["4"]["majors"]), ("unopposed", "D"))
+
+    def test_district_key(self):
+        self.assertEqual(district_key("Connecticut's 1st House of Representatives district election, 2026"), "1")
+        self.assertEqual(district_key("2026 Maryland House of Delegates District 1A election"), "1a")
+        self.assertEqual(district_key("LD 9 (Position 1)"), "9 position 1")
+        self.assertEqual(district_key("Addison-1"), "addison 1")
+        self.assertIsNone(district_key("Results"))
+
+    def test_one_candidate_per_row(self):
+        r = self.races
+        self.assertEqual((r["PA 1"]["category"], r["PA 1"]["majors"]), ("unopposed", "D"))
+        self.assertEqual([c["name"] for c in r["PA 3"]["candidates"]], ["Ryan Bizzarro", "Some Challenger"])
+        self.assertEqual((r["PA 3"]["seats"], r["PA 3"]["category"]), (1, "two_party"))
 
     def test_party(self):
         self.assertEqual(party("Republican, Conservative"), "R")
