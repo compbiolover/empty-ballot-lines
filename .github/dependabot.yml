@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # requirements.txt is compiled with hashes from requirements.in. The cooldown
+  # holds a new release back until it has been public for a week; malicious
+  # releases are usually pulled within hours.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
