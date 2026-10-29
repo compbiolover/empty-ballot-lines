@@ -222,7 +222,7 @@ def district_key(s):
 
 
 def headings(t):
-    """Headings above t, nearest first: the sections enclosing it, then the nearest few others."""
+    """Headings above t, nearest first: (the sections enclosing it, the nearest few headings of any level)."""
     path, near, level = [], [], 7
     for h in t.find_all_previous(["h2", "h3", "h4", "h5", "h6"]):
         if len(near) < 4:
@@ -232,7 +232,7 @@ def headings(t):
             level = int(h.name[1])
         if level == 2 and len(near) == 4:
             break
-    return path + near  # District N is often several levels up, under "Results" or "General election"
+    return path, near  # District N is often several levels up, under "Results" or "General election"
 
 
 def box_key(cap, heads):
@@ -259,7 +259,8 @@ def parse_boxes(soup):
         if not result_box(t):
             continue
         cap = text(t.caption) if t.caption else ""
-        heads = headings(t)
+        path, near = headings(t)
+        heads = path + near
         if EXCLUDE.search(cap) or (heads and EXCLUDE.search(heads[0])):
             continue
         key = box_key(cap, heads)
@@ -292,11 +293,12 @@ def parse_primaries(soup):
         if not result_box(t):
             continue
         cap = text(t.caption) if t.caption else ""
-        heads = headings(t)
-        label = f"{cap} {heads[0] if heads else ''}"
+        path, near = headings(t)
+        label = f"{cap} {path[0] if path else ''}"
         if not re.search(r"primary", label, re.I) or re.search(r"special|runoff|recall", label, re.I):
             continue
-        key = box_key(cap, heads)
+        # the enclosing heading first: primary captions carry dates, party names and "Unofficial"
+        key = box_key("", path) or box_key(cap, near)
         if not key:
             continue
         sections = [[]]
@@ -315,7 +317,7 @@ def parse_primaries(soup):
         winners = [[c for c, won in s if won] for s in secs]
         cands = [c for w in winners for c in w]
         # shortcut: seats = most winners of one party, so a 2-seat district where each party nominated 1 counts 1
-        seats = 1 if open_primary else max(map(len, winners), default=1)
+        seats = 1 if open_primary else max([1, *map(len, winners)])
         cat, majors = classify(cands, seats)
         both = {c["party"] for s in secs for c, _ in s} >= {"D", "R"}
         if not all(winners) or not (open_primary or both):
