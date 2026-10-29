@@ -73,12 +73,43 @@ class ParseTest(unittest.TestCase):
         # CT: dated primary skipped, district-captioned box read
         self.assertEqual((r["4"]["category"], r["4"]["majors"]), ("unopposed", "D"))
 
+    def test_primary_results(self):
+        with open(os.path.join(os.path.dirname(FIXTURE), "primaries.html")) as f:
+            r = {district_key(x["district"]): x for x in parse_page(f.read())}
+        self.assertEqual(sorted(r), ["1", "2", "3", "5"])  # the "Districts 26–50" box has no district
+        # AZ: bold winners of each party's primary make the field; most winners of one party = seats
+        self.assertEqual([c["name"] for c in r["1"]["candidates"]], ["Selina Bliss", "Quang Nguyen", "Tara Woods"])
+        self.assertEqual((r["1"]["seats"], r["1"]["category"]), (2, "two_party"))
+        # HI: only the Democratic primary is shown, so the race is not called unopposed; blank votes dropped
+        self.assertEqual((r["2"]["category"], [c["name"] for c in r["2"]["candidates"]]),
+                         ("unknown", ["Sue Keohokapu Lee Loy"]))
+        # ND: one box per party merges into one district; write-in dropped
+        self.assertEqual((r["3"]["seats"], r["3"]["category"], r["3"]["majors"]), (2, "two_party", "DR"))
+        # IN: a general box several headings below "District 5" is still read
+        self.assertEqual([c["name"] for c in r["5"]["candidates"]], ["Dale DeVon", "Alex Wait"])
+
+    def test_open_primary(self):
+        row = ('<tr class="vcard"><td style="background-color:#E81B23"></td><td class="org">{}</td>'
+               '<th class="fn"><b>{}</b></th><td>1</td></tr>')
+        html = "".join(
+            f'<h3>District {d}</h3><table class="wikitable"><caption>Primary election</caption>'
+            '<tr><th>Party</th><th>Candidate</th></tr>' + "".join(row.format(p, n) for p, n in cands) + "</table>"
+            for d, cands in (("A", [("Republican", "Jeremy Bynum"), ("Independent", "Grant Echohawk")]),
+                             ("24", [("Republican", "Ken McCarty"), ("Republican", "Gina Wall")])))
+        r = {district_key(x["district"]): x for x in parse_page(html)}
+        # Alaska top-four: one primary for every party, so everyone who advances is on the ballot, one seat
+        self.assertEqual((r["a"]["seats"], r["a"]["category"], r["a"]["majors"]), (1, "one_party", "R"))
+        self.assertEqual((r["24"]["seats"], r["24"]["category"]), (1, "one_party"))
+
     def test_district_key(self):
         self.assertEqual(district_key("Connecticut's 1st House of Representatives district election, 2026"), "1")
         self.assertEqual(district_key("2026 Maryland House of Delegates District 1A election"), "1a")
         self.assertEqual(district_key("LD 9 (Position 1)"), "9 position 1")
         self.assertEqual(district_key("Addison-1"), "addison 1")
         self.assertIsNone(district_key("Results"))
+        self.assertIsNone(district_key("Districts 26–50"))
+        self.assertEqual(district_key("District A"), "a")
+        self.assertEqual(district_key("District 1 election, Democratic–NPL primary 2 to be nominated"), "1")
 
     def test_one_candidate_per_row(self):
         r = self.races
