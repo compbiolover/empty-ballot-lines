@@ -1,7 +1,7 @@
 """Build site/data/seats.{json,csv}: every 2026 state legislative race and who is on the ballot.
 
 Source: the per-chamber "2026 <State> <Chamber> election" pages on Wikipedia, read through the
-MediaWiki parse API. Each page carries a district table (incumbent, status, candidates).
+MediaWiki parse API, plus official state lists (states.py). See README "Data quality" for the page layouts read.
 
 Run: python pipeline/build.py
 """
@@ -146,7 +146,7 @@ SKIP_ROW = re.compile(r"^(no candidate|none|vacant|n/?a)\b|^[-—–]+$", re.I)
 EXCLUDE = re.compile(r"primary|special|runoff|caucus|convention|recall|voided|nominat", re.I)
 GENERIC = {"district", "house", "senate", "state", "of", "representatives", "representative", "delegates",
            "assembly", "election", "elections", "general", "results", "result", "the", "s", "legislative", "ld",
-           "hd", "sd", "ad", "legislature", "and"}
+           "hd", "sd", "ad", "legislature", "and", "primary", "republican", "democratic", "npl"}
 STATE_WORDS = {w for _, s, _ in CHAMBERS for w in s.lower().split()} | {"louisiana", "mississippi", "jersey", "virginia"}
 
 
@@ -210,36 +210,68 @@ def candidates(cell):
 
 def district_key(s):
     """Comparable district id: 'Connecticut's 1st House district election, 2026' and 'District 1' both give '1'."""
-    s = re.sub(r"\b(19|20)\d\d\b", " ", s.lower())
+    if re.search(r"\bdistricts\b", s, re.I):
+        return None  # a range heading such as "Districts 26–50", not one district
+    m = re.fullmatch(r"\s*district ([a-z])\s*", s, re.I)
+    if m:
+        return m.group(1).lower()  # Alaska Senate letters
+    s = re.sub(r"\b(19|20)\d\d\b|\b\d+ to be (elected|nominated)\b", " ", s.lower())
     s = re.sub(r"(\d+)(st|nd|rd|th)\b", r"\1", s)
     toks = [t for t in re.findall(r"\d+[a-z]?\b|[a-z]+", s) if t not in GENERIC and t not in STATE_WORDS]
     return " ".join(toks) if any(t[0].isdigit() for t in toks) else None
+
+
+def headings(t):
+    """Headings above t, nearest first: the sections enclosing it, then the nearest few others."""
+    path, near, level = [], [], 7
+    for h in t.find_all_previous(["h2", "h3", "h4", "h5", "h6"]):
+        if len(near) < 4:
+            near.append(text(h))
+        if int(h.name[1]) < level:
+            path.append(text(h))
+            level = int(h.name[1])
+        if level == 2 and len(near) == 4:
+            break
+    return path + near  # District N is often several levels up, under "Results" or "General election"
+
+
+def box_key(cap, heads):
+    return district_key(cap) or next((k for k in map(district_key, heads) if k), None)
+
+
+def result_box(t):
+    first = t.find(["th", "td"])
+    # not a whole-chamber district table (handled by parse_table)
+    return t.find("tr", class_="vcard") and not (first and re.match(r"district|seat", text(first), re.I))
+
+
+def box_person(tr):
+    org = tr.find(class_="org")
+    swatch = tr.find("td", style=COLOR)
+    return person(text(tr.find(class_="fn")), text(org) if org else "",
+                  COLOR.search(swatch["style"]).group(1) if swatch else None)
 
 
 def parse_boxes(soup):
     """General-election result boxes ({{Election box}}), one per district section."""
     races = {}
     for t in soup.find_all("table"):
-        first = t.find(["th", "td"])
-        if not t.find("tr", class_="vcard") or (first and re.match(r"district|seat", text(first), re.I)):
-            continue  # not a result box, or a whole-chamber district table (handled by parse_table)
+        if not result_box(t):
+            continue
         cap = text(t.caption) if t.caption else ""
-        heads = [text(h) for h in t.find_all_previous(["h2", "h3", "h4", "h5", "h6"], limit=4)]
+        heads = headings(t)
         if EXCLUDE.search(cap) or (heads and EXCLUDE.search(heads[0])):
             continue
-        key = district_key(cap) or next((k for k in map(district_key, heads) if k), None)
+        key = box_key(cap, heads)
         if not key or key in races:
             continue
         rows = t.find_all("tr")
         sections = [i for i, tr in enumerate(rows) if not tr.find("td") and re.match(r"general election", text(tr), re.I)]
         cands = []
         for tr in rows[sections[0] if sections else 0:]:  # a box can hold the primary and the general
-            fn = tr.find(class_="fn") if "vcard" in (tr.get("class") or []) else None
-            if not fn:
+            if "vcard" not in (tr.get("class") or []) or not tr.find(class_="fn"):
                 continue
-            org = tr.find(class_="org")
-            swatch = tr.find("td", style=COLOR)
-            c = person(text(fn), text(org) if org else "", COLOR.search(swatch["style"]).group(1) if swatch else None)
+            c = box_person(tr)
             if c:
                 cands.append(c)
         m = re.search(r"(\d+)\s+to be elected", cap, re.I)
@@ -248,6 +280,49 @@ def parse_boxes(soup):
         races[key] = {"district": f"District {key.title()}", "seats": seats, "incumbent_party": "", "status": "",
                       "candidates": cands, "category": cat, "majors": majors}
     return list(races.values())
+
+
+def parse_primaries(soup):
+    """The November field from primary result boxes, for pages that have no general-election box yet:
+    each primary's winners (bold) are on the ballot. Trusted only when the page shows both the D and the
+    R primary, or one open primary listing every party (Alaska); otherwise the race stays unknown,
+    because some pages box only contested primaries."""
+    by = {}  # district key -> sections, each a list of (candidate, won)
+    for t in soup.find_all("table"):
+        if not result_box(t):
+            continue
+        cap = text(t.caption) if t.caption else ""
+        heads = headings(t)
+        label = f"{cap} {heads[0] if heads else ''}"
+        if not re.search(r"primary", label, re.I) or re.search(r"special|runoff|recall", label, re.I):
+            continue
+        key = box_key(cap, heads)
+        if not key:
+            continue
+        sections = [[]]
+        for tr in t.find_all("tr"):
+            org, fn = tr.find(class_="org"), tr.find(class_="fn")
+            if not tr.find("td"):
+                sections.append([])  # a header row starts the next party's primary
+            elif "vcard" in (tr.get("class") or []) and fn and org and text(org):  # no party: "Blank votes"
+                c = box_person(tr)
+                if c:
+                    sections[-1].append((c, bool(fn.find("b"))))
+        by.setdefault(key, []).extend(s for s in sections if s)
+    races = []
+    open_primary = any(len({c["label"] for c, _ in s}) > 1 for secs in by.values() for s in secs)  # top-four
+    for key, secs in by.items():
+        winners = [[c for c, won in s if won] for s in secs]
+        cands = [c for w in winners for c in w]
+        # shortcut: seats = most winners of one party, so a 2-seat district where each party nominated 1 counts 1
+        seats = 1 if open_primary else max(map(len, winners), default=1)
+        cat, majors = classify(cands, seats)
+        both = {c["party"] for s in secs for c, _ in s} >= {"D", "R"}
+        if not all(winners) or not (open_primary or both):
+            cat = "unknown"  # a primary not yet decided, or the other party's primary may just not be shown
+        races.append({"district": f"District {key.title()}", "seats": seats, "incumbent_party": "", "status": "",
+                      "candidates": cands, "category": cat, "majors": majors})
+    return races
 
 
 def span(cell, attr):
@@ -380,8 +455,8 @@ def parse_infobox(box):
 
 
 def parse_page(html):
-    """Races from three layouts Wikipedia uses, merged by district: a district table, per-district
-    election boxes, and per-district infoboxes. The first source that names the candidates wins."""
+    """Races from the layouts Wikipedia uses, merged by district: a district table, per-district
+    election boxes, per-district infoboxes, and primary results. The first source that names the candidates wins."""
     soup = BeautifulSoup(html, "html.parser")
     table = [r for t in soup.find_all("table") for r in parse_table(t)]
     infobox = []
@@ -392,8 +467,8 @@ def parse_page(html):
             infobox.append({**parse_infobox(box), "district": district})
     known = lambda rs: [r for r in rs if r["category"] != "unknown"]
     merged = {}
-    boxes = parse_boxes(soup)
-    for r in known(table) + known(boxes) + known(infobox) + table + boxes + infobox:
+    boxes, primaries = parse_boxes(soup), parse_primaries(soup)
+    for r in known(table) + known(boxes) + known(infobox) + known(primaries) + table + boxes + infobox + primaries:
         merged.setdefault(district_key(r["district"]) or r["district"], r)
     return list(merged.values())
 
@@ -445,7 +520,13 @@ def main():
                 rs = parse_page(html) if html else []
             except (urllib.error.URLError, TimeoutError, KeyError, ValueError) as e:
                 rs, info["error"] = [], str(e)
-        if not rs and info["error"] and prev.get((code, chamber)):  # a fetch failed: keep last good data
+        seats, prev_seats = (sum(r["seats"] for r in x) for x in (rs, prev.get((code, chamber), [])))
+        if not rs:
+            info["error"] = info["error"] or "no races found"
+        elif seats < prev_seats:  # seat counts are fixed by law: a drop means the page or parser broke
+            info["error"] = "; ".join(filter(None, [info["error"], f"{seats} seats, down from {prev_seats}"]))
+            rs = []
+        if not rs and prev.get((code, chamber)):  # a fetch or parse failed: keep last good data
             rs, info["stale"] = prev[(code, chamber)], True
         for r in rs:
             r.update(state=code, chamber=chamber, upper="Senate" in chamber)
@@ -475,6 +556,12 @@ def main():
                         r["incumbent_party"], r["status"],
                         "; ".join(f"{c['name']} ({c['label']})" for c in r["candidates"])])
     print(f"Wrote {len(races)} races / {sum(r['seats'] for r in races)} seats from {len(chambers)} chambers.")
+    problems = [c for c in chambers if c["error"]]
+    for c in problems:
+        print(f"::warning::{c['state']} {c['chamber']}: {c['error']}")
+    if problems and os.environ.get("GITHUB_OUTPUT"):  # the workflow fails the run after deploying
+        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+            f.write(f"problems={len(problems)}\n")
 
 
 if __name__ == "__main__":

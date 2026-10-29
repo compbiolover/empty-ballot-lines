@@ -39,13 +39,16 @@ Each race gets one category:
 
 ## Data quality
 
-Wikipedia pages are not uniform, so the parser has two strategies:
+Wikipedia pages are not uniform, so the parser reads several layouts and merges them by district (the first that names the candidates wins):
 
 1. **District table** (most pages): the table whose first column is the district and which has a "Candidates" column. Rowspans are expanded, so multi-member and position-numbered districts come out right.
-2. **District sections** (e.g. the Tennessee Senate page): the election infobox under each "District N" heading. A primary-only box counts as unopposed only when the page says no other party filed.
+2. **General-election boxes** under each district's heading, however deep the heading sits (e.g. Indiana House).
+3. **District sections** (e.g. the Tennessee Senate page): the election infobox under each "District N" heading. A primary-only box counts as unopposed only when the page says no other party filed.
+4. **Primary results** (e.g. Arizona, North Dakota and Alaska House): each primary's winners (bold) form the November field. This is trusted only when the page shows both the Democratic and Republican primary for the district, or a single open primary listing every party (Alaska); otherwise the seat is `unknown`, because some pages (e.g. Hawaii House) box only contested primaries.
 
 Safeguards:
-- If a chamber page fails to load or parse, its last good data is kept and marked stale.
+- A chamber that loads but parses to no races, or to fewer seats than the last run, is an error: its last good data is kept and marked stale. Same if the page fails to load.
+- Any chamber error is printed as a warning and turns the workflow run red, after the site has still been deployed.
 - The run aborts without overwriting anything if nothing parses.
 - The dashboard lists every chamber that is missing, stale, or has unlisted seats.
 
