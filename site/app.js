@@ -44,9 +44,10 @@ async function init() {
   stateNames = new Map(data.meta.chambers.map((c) => [c.state, c.state_name]));
   byState = d3.group(data.races, (r) => r.state);
   const updated = new Date(data.meta.generated_at);
-  d3.select("#meta").text(`Updated ${updated.toLocaleDateString(undefined, { dateStyle: "medium" })} · ${num(data.races.length)} races in ${byState.size} states · Source: Wikipedia`);
+  d3.select("#meta").text(`Updated ${updated.toLocaleDateString(undefined, { dateStyle: "medium" })} · ${num(data.races.length)} races in ${byState.size} states · Sources: ${new Set(data.meta.chambers.filter((c) => c.source === "state").map((c) => c.state)).size} state election offices and Wikipedia`);
 
   renderKpis();
+  renderGaps();
   renderMap(atlas);
   renderTable();
   renderCoverage();
@@ -79,6 +80,18 @@ function renderKpis() {
   const l = k.append("div").attr("class", "l");
   l.filter((d) => d[2]).append("span").attr("class", "sw").style("background", (d) => `var(${d[2]})`);
   l.append("span").text((d) => d[1]);
+}
+
+function renderGaps() {
+  const missing = DATA.meta.chambers.filter((c) => !c.races);
+  const unlisted = d3.sum(DATA.meta.chambers, (c) => c.races ? c.unknown_seats : 0);
+  if (!missing.length && !unlisted) return;
+  const names = Array.from(d3.group(missing, (c) => c.state_name), ([s, cs]) => cs.length > 1 ? `${s} (both chambers)` : `${s} ${cs[0].chamber}`);
+  const box = d3.select("#gaps").attr("hidden", null);
+  box.append("b").text("Incomplete data. ");
+  if (missing.length) box.append("span").text(`${missing.length} of ${DATA.meta.chambers.length} chambers have no candidate data and are left out of every total: ${names.join(", ")}. ` +
+    "Wikipedia has no candidate list for them yet, and the state's official list isn't read automatically. A gray state on the map means missing data, not an empty ballot. ");
+  if (unlisted) box.append("span").text(`Another ${num(unlisted)} seats in other chambers have no candidates listed yet and are also left out.`);
 }
 
 function stateStats() {
@@ -249,5 +262,5 @@ function renderCoverage() {
   if (!issues.length) { box.append("p").text("All 88 chambers were read on the last refresh."); return; }
   box.append("p").text(`Coverage notes (${issues.length} of ${DATA.meta.chambers.length} chambers):`);
   box.append("ul").selectAll("li").data(issues).join("li").text((c) =>
-    `${c.state_name} ${c.chamber}: ${!c.races ? "no district table found" : c.stale ? "kept from an earlier refresh" : `${c.unknown_seats} seat${c.unknown_seats > 1 ? "s" : ""} with no candidates listed yet`}`);
+    `${c.state_name} ${c.chamber}: ${!c.races ? "no candidate data" : c.stale ? "kept from an earlier refresh" : `${c.unknown_seats} seat${c.unknown_seats > 1 ? "s" : ""} with no candidates listed yet`}`);
 }

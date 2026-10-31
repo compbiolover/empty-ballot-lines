@@ -127,4 +127,6 @@ tbody tr:hover { background: var(--bg); }
 .prose dt { font-weight: 600; margin-top: 10px; }
 .prose dd { margin: 2px 0 0; color: var(--text-2); }
 .prose p { color: var(--text-2); font-size: .92rem; }
+.notice { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 8px; padding: 10px 14px; margin: 0 0 16px; font-size: .9rem; color: var(--text-2); }
+.notice b { color: var(--text); }
 #coverage ul { color: var(--text-2); font-size: .85rem; padding-left: 18px; }
