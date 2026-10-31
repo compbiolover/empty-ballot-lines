@@ -1,13 +1,16 @@
 """State election office readers, against markup copied from the live 2026 pages (trimmed)."""
+import io
 import os
 import sys
 import unittest
+import zipfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pipeline"))
 import states  # noqa: E402
 from build import rows_to_races  # noqa: E402
 
 S, H = states.SENATE, states.HOUSE
+XLSX = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 
 
 class StatesTest(unittest.TestCase):
@@ -113,6 +116,74 @@ JUDGE OF THE CHANCERY COURT                                                     
         self.assertEqual(states.wyoming(text), [
             (S, "District 5", "Lauren Schoenfeld", "Republican"), (S, "District 5", "Ted Hanlon", "Democratic"),
             (H, "District 62", "Kept Person", "Democratic")])
+
+    def test_missouri(self):
+        text = """         REPUBLICAN CANDIDATES
+         For U.S. Representative
+         District 4, Mark Alford
+         For State Senator
+         District 2, Nick Schroer
+                                                                        8
+     District 30, Melanie Stinnett
+     For State Representative
+     District 48, T im Taylor
+     For Circuit Judge
+     Circuit 11 Division 1, Brittney R. Smith
+ DEMOCRATIC CANDIDATES
+ For State Representative
+ District 48, Jane Doe
+"""
+        self.assertEqual(states.missouri(text), [
+            (S, "District 2", "Nick Schroer", "Republican"), (S, "District 30", "Melanie Stinnett", "Republican"),
+            (H, "District 48", "T im Taylor", "Republican"), (H, "District 48", "Jane Doe", "Democratic")])
+
+    def test_kansas(self):
+        def tr(*c):
+            return "<tr>" + "".join(f"<td>{x}</td>" for x in c) + "</tr>"
+        html = ("<table><tr><th>Candidate</th><th>Office</th><th>District</th><th>Position</th><th>Division</th><th>Party</th></tr>"
+                + tr("Roger Marshall", "United States Senate", "0", "0", "0", "Republican")
+                + tr("Dale Helwig", "Kansas House of Representatives", "1", "0", "0", "Republican")
+                + tr("Pat Proctor", "Kansas Senate", "5", "0", "0", "Republican") + "</table>")
+        self.assertEqual(states.kansas(html), [(H, "District 1", "Dale Helwig", "Republican")])
+
+    def test_north_dakota(self):
+        def tr(contest, name, party):
+            return (f'<tr class="rgRow"><td data-title="Contest:">{contest}</td><td>4</td>'
+                    f'<td data-title="Name:">{name}</td><td data-title="Party:">{party}</td></tr>')
+        html = ("<table>" + tr("State Senator<br />District 07", "A Person", "Republican")
+                + tr("State Representative<br />District 05", "B Person", "Democratic-NPL")
+                + tr("State Representative<br />District 05", "C Person", "Republican")
+                + tr("State Representative<br />District 05", "D Person", "Republican")
+                + tr("State Representative Unexpired 2-Year Term<br />District 26", "E Person", "Republican")
+                + tr("County Sheriff<br />Burleigh", "F Person", "Republican") + "</table>")
+        rows = states.north_dakota(html)
+        self.assertEqual(rows, [(S, "District 7", "A Person", "Republican", 1),
+                                (H, "District 5", "B Person", "Democratic-NPL", 2), (H, "District 5", "C Person", "Republican", 2),
+                                (H, "District 5", "D Person", "Republican", 2), (H, "District 26", "E Person", "Republican", 1)])
+        races = rows_to_races([r[1:] for r in rows if r[0] == H])
+        self.assertEqual([(r["seats"], r["category"]) for r in races], [(2, "two_party"), (1, "unopposed")])
+
+    def test_vermont(self):
+        sheet = ('<sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c>'
+                 '<c r="D1" t="s"><v>3</v></c><c r="E1" t="s"><v>4</v></c><c r="O1" t="s"><v>5</v></c></row>')
+        for i, (contest, dist, name, party, n) in enumerate([
+                ("STATE SENATOR", "CHI CT 1", "ANN ONE", "PROG/DEM", "THREE"),
+                ("STATE SENATOR", "CHI CT 1", "BOB TWO", "REP/DEM", "THREE"),
+                ("STATE REPRESENTATIVE", "ADD 1", "CY THREE", "INDEPENDENT", "TWO"),
+                ("SHERIFF", "ADDISON", "DEE FOUR", "REPUBLICAN", "ONE")], start=2):
+            sheet += (f'<row r="{i}">' + "".join(f'<c r="{col}{i}" t="inlineStr"><is><t>{v}</t></is></c>'
+                      for col, v in zip("ABCDEO", (contest, dist, name, "TOWN", party, n))) + "</row>")
+        heads = ["Contest", "District Name", "Name On Ballot", "Town Of Residence", "Party", "Vote for Count"]
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("xl/worksheets/sheet1.xml", f'<worksheet xmlns="{XLSX}">{sheet}</sheetData></worksheet>')
+            z.writestr("xl/sharedStrings.xml", f'<sst xmlns="{XLSX}">' + "".join(f"<si><t>{h}</t></si>" for h in heads) + "</sst>")
+        rows = states.vermont(states.xlsx_text(buf.getvalue()))
+        self.assertEqual(rows, [(S, "CHI CT 1", "ANN ONE", "PROG/DEM", 3), (S, "CHI CT 1", "BOB TWO", "REP/DEM", 3),
+                                (H, "ADD 1", "CY THREE", "INDEPENDENT", 2)])
+        senate = rows_to_races([r[1:] for r in rows if r[0] == S])[0]
+        self.assertEqual([c["party"] for c in senate["candidates"]], ["D", "R"])  # first major party in a fused label
+        self.assertEqual((senate["seats"], senate["category"]), (3, "unopposed"))
 
     def test_new_mexico(self):
         head = ["Contest", "Contest", "District", "Filing County", "Name", "Party", "Ballot Order", "Status"]
