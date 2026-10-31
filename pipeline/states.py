@@ -1,14 +1,19 @@
 """Official candidate lists from state election offices.
 
-Each reader returns rows of (chamber, district, candidate name, party label) for the
-November 2026 general election, already limited to qualified, on-ballot candidates.
+Each reader returns rows of (chamber, district, candidate name, party label[, seats]) for the
+November 2026 general election, already limited to qualified, on-ballot candidates. Seats
+default to 1 when a reader leaves them out.
 Chamber names match build.CHAMBERS. Where a reader returns rows for a chamber, they
 replace that chamber's Wikipedia data.
 """
+import http.cookiejar
 import io
 import logging
 import re
+import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
+import zipfile
 
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
@@ -18,13 +23,49 @@ logging.getLogger("pypdf").setLevel(logging.ERROR)  # font-encoding chatter on e
 SENATE, HOUSE = "Senate", "House of Representatives"
 
 
-def get(url):
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=60) as r:
+def get(url, choices=None, button=None):
+    """The page as text; PDFs and spreadsheets are converted. With choices, the page is an ASP.NET search
+    form: each <select> whose name contains a key is set to the option with that text, then `button` is pressed."""
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    opener.addheaders = [("User-Agent", UA)]
+    data = None
+    if choices:  # the form only accepts a postback from the same session that loaded it
+        with opener.open(url, timeout=60) as r:
+            soup = BeautifulSoup(r.read().decode("utf-8", "replace"), "html.parser")
+        form = {i["name"]: i.get("value", "") for i in soup.select("input[type=hidden]") if i.get("name")}
+        for sel in soup.find_all("select"):
+            want = next((v for k, v in choices.items() if k in sel["name"]), None)
+            opts = sel.find_all("option")
+            opt = next(o for o in opts if txt(o) == want) if want else sel.find("option", selected=True) or opts[0]
+            form[sel["name"]] = opt.get("value", "")
+        submit = soup.find("input", attrs={"type": "submit", "value": button})
+        form[submit["name"]] = button
+        data = urllib.parse.urlencode(form).encode()
+    with opener.open(url, data, timeout=60) as r:
         body = r.read()
         if body.startswith(b"%PDF"):  # layout mode keeps each table row on one line
             return "\n".join(p.extract_text(extraction_mode="layout") for p in PdfReader(io.BytesIO(body)).pages)
+        if body.startswith(b"PK"):
+            return xlsx_text(body)
         return body.decode(r.headers.get_content_charset() or "utf-8", "replace")
+
+
+def xlsx_text(body):
+    """The first sheet of an .xlsx workbook as tab-separated lines."""
+    m = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    z = zipfile.ZipFile(io.BytesIO(body))
+    shared = [] if "xl/sharedStrings.xml" not in z.namelist() else [
+        "".join(t.text or "" for t in si.iter(m + "t")) for si in ET.fromstring(z.read("xl/sharedStrings.xml")).iter(m + "si")]
+    lines = []
+    for row in ET.fromstring(z.read("xl/worksheets/sheet1.xml")).iter(m + "row"):
+        cells = {}
+        for c in row.iter(m + "c"):
+            v = c.find(m + "v")
+            col = sum((ord(ch) - 64) * 26 ** i for i, ch in enumerate(reversed(re.match(r"[A-Z]+", c.get("r")).group())))
+            cells[col] = shared[int(v.text)] if c.get("t") == "s" else "".join(t.text or "" for t in c.iter(m + "t")) \
+                if c.get("t") == "inlineStr" else v.text if v is not None else ""
+        lines.append("\t".join(cells.get(i, "").replace("\t", " ") for i in range(1, max(cells, default=0) + 1)))
+    return "\n".join(lines)
 
 
 def txt(el):
@@ -129,6 +170,60 @@ def wyoming(text):
             rows.pop()  # a date on the city line is the date withdrawn
     return rows
 
+def missouri(text):
+    """Secretary of State certification PDF: a 'REPUBLICAN CANDIDATES' heading per party, then 'For <office>'
+    headings, then 'District N, Name' lines."""
+    rows, party, chamber = [], "", None
+    for line in text.splitlines():
+        line = re.sub(r"\s+", " ", line).strip()
+        m = re.fullmatch(r"([A-Z ]+) CANDIDATES", line)
+        if m:
+            party, chamber = m.group(1).title(), None
+        elif line.startswith("For "):
+            chamber = {"For State Senator": SENATE, "For State Representative": HOUSE}.get(line)
+        elif chamber and (m := re.fullmatch(r"District (\d+), (.+)", line)):
+            rows.append((chamber, f"District {m.group(1)}", m.group(2), party))
+    return rows
+
+
+def kansas(html):
+    """The candidate grid: Candidate | Office | District | Position | Division | Party | ..."""
+    rows = []
+    for tr in BeautifulSoup(html, "html.parser").find_all("tr"):
+        c = [txt(td) for td in tr.find_all("td")]
+        if len(c) > 5 and c[1] == "Kansas House of Representatives":  # the senate is not up in 2026
+            rows.append((HOUSE, f"District {c[2]}", c[0], c[5]))
+    return rows
+
+
+def north_dakota(html):
+    """Search results, one row per candidate, cells labelled by data-title. House districts elect two,
+    except a race for one unexpired term ('State Representative Unexpired 2-Year Term District 20')."""
+    rows = []
+    for tr in BeautifulSoup(html, "html.parser").select("tr.rgRow, tr.rgAltRow"):
+        cell = lambda t: txt(tr.find("td", attrs={"data-title": t}))
+        m = re.fullmatch(r"State (Senator|Representative)( Unexpired .*?)? District 0*(\d+)", cell("Contest:"))
+        if m:
+            house = m.group(1) == "Representative"
+            rows.append((HOUSE if house else SENATE, f"District {m.group(3)}", cell("Name:"), cell("Party:"),
+                         2 if house and not m.group(2) else 1))
+    return rows
+
+
+def vermont(text):
+    """Qualified-candidates workbook: Contest | District Name | Name On Ballot | Town | Party | ... | Vote for Count."""
+    lines = [line.split("\t") for line in text.splitlines()]
+    head = next(c for c in lines if "Vote for Count" in c)
+    col = {h: head.index(h) for h in ("Contest", "District Name", "Name On Ballot", "Party", "Vote for Count")}
+    seats = {"ONE": 1, "TWO": 2, "THREE": 3}
+    rows = []
+    for c in lines:
+        chamber = {"STATE SENATOR": SENATE, "STATE REPRESENTATIVE": HOUSE}.get(c[col["Contest"]] if len(c) > col["Contest"] else "")
+        if chamber:
+            rows.append((chamber, c[col["District Name"]], c[col["Name On Ballot"]], c[col["Party"]],
+                         seats[c[col["Vote for Count"]]]))
+    return rows
+
 
 def new_mexico(html):
     """The candidate grid; columns found by header name."""
@@ -146,7 +241,9 @@ def new_mexico(html):
     return rows
 
 
-# state code -> (reader, [urls]); a reader takes the fetched text of each url, concatenated
+# state code -> (reader, [urls]); a reader takes the fetched text of each url, concatenated.
+# A (url, choices, button) entry is a search form; see get().
+ND_LIST = "https://vip.sos.nd.gov/candidatelist.aspx?eid=348"
 SOURCES = {
     "CO": (colorado, ["https://www.sos.state.co.us/pubs/elections/vote/generalCandidates.html"]),
     "DE": (delaware, ["https://elections.delaware.gov/candidates/candidatelist/genl_fcddt_2026.html"]),
@@ -156,6 +253,13 @@ SOURCES = {
                        "https://electionresultsfiles.sos.mn.gov/20261103/stsenate.txt"]),
     "NV": (nevada, ["https://www.leg.state.nv.us/Division/Research/Documents/CandidatesList_2026General.pdf"]),
     "WY": (wyoming, ["https://sos.wyo.gov/Elections/Docs/2026/2026_WY_General_Election_Candidates.pdf"]),
+    "KS": (kansas, [("https://sos.ks.gov/elections/elections_upcoming_candidate.aspx",
+                     {"ddlElections": "2026 General"}, "Submit")]),
+    "MO": (missouri, ["https://www.sos.mo.gov/CMSImages/ElectionCandidates/2026GeneralElectionCertifiedCandidates.pdf"]),
+    "ND": (north_dakota, [(ND_LIST, {"ddlContest": "State Senator"}, "Search"),
+                          (ND_LIST, {"ddlContest": "State Representative"}, "Search")]),
+    "VT": (vermont, ["https://outside.vermont.gov/dept/sos/Elections_Division/election_info_resources/candidates/"
+                     "2026_general_election_qualified_candidates.xlsx"]),
     "NM": (new_mexico, ["https://candidateportal.servis.sos.state.nm.us/CandidateList.aspx"]),
 }
 
@@ -165,4 +269,4 @@ def fetch_state(code):
     if code not in SOURCES:
         return []
     reader, urls = SOURCES[code]
-    return reader("\n".join(get(u) for u in urls))
+    return reader("\n".join(get(*u) if isinstance(u, tuple) else get(u) for u in urls))

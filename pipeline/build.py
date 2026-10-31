@@ -130,11 +130,11 @@ def lines(cell):
 
 def party(s):
     """'R', 'D' or 'O'. Fusion/cross-nominated labels take the first major party named."""
-    code = s.strip().strip(".").upper()  # official lists use bare codes
-    if code in ("R", "REP", "GOP"):
-        return "R"
-    if code in ("D", "DEM", "DFL"):
-        return "D"
+    for code in s.strip().strip(".").upper().split("/"):  # official lists use bare codes, fused as "PROG/DEM"
+        if code in ("R", "REP", "GOP"):
+            return "R"
+        if code in ("D", "DEM", "DFL"):
+            return "D"
     s = s.lower()
     hits = [(s.find(k), code) for k, code in
             (("republican", "R"), ("democrat", "D"), ("dfl", "D"), ("farmer", "D")) if k in s]
@@ -476,17 +476,18 @@ def parse_page(html):
 
 
 def rows_to_races(rows):
-    """Races from (district, name, party label) rows of an official list; one seat per district."""
-    by = {}
-    for district, name, label in rows:
+    """Races from (district, name, party label[, seats]) rows of an official list; seats default to 1."""
+    by, seats = {}, {}
+    for district, name, label, *n in rows:
         c = person(name, label)
         by.setdefault(district, [])
+        seats[district] = n[0] if n else 1
         if c:
             by[district].append(c)
     out = []
     for district, cands in by.items():
-        cat, majors = classify(cands, 1)  # shortcut: all current official readers are single-member states
-        out.append({"district": district, "seats": 1, "incumbent_party": "", "status": "",
+        cat, majors = classify(cands, seats[district])
+        out.append({"district": district, "seats": seats[district], "incumbent_party": "", "status": "",
                     "candidates": cands, "category": cat, "majors": majors})
     return out
 
@@ -515,7 +516,8 @@ def main():
         rows, info["error"] = official[code]
         rs = rows_to_races([r[1:] for r in rows if r[0] == chamber])
         if rs:
-            info["source"], info["page"] = "state", states.SOURCES[code][1][0]
+            url = states.SOURCES[code][1][0]
+            info["source"], info["page"] = "state", url[0] if isinstance(url, tuple) else url
         else:
             try:
                 info["page"], html = page_html(state, chamber)
