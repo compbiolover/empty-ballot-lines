@@ -61,6 +61,59 @@ class StatesTest(unittest.TestCase):
         races = rows_to_races([r[1:] for r in rows if r[0] == H])
         self.assertEqual((races[0]["category"], races[0]["majors"]), ("two_party", "DR"))  # bare R and DFL codes
 
+    def test_nevada(self):
+        text = """                            NEVADA STATE SENATE CANDIDATES
+
+  DISTRICT          NAME                                                            PARTY
+
+    2               Edgar Flores*                                                  Democrat
+
+
+                    Matthew R. Buehler                                             Republican
+    13              Richard “Skip” Daly*                                           Democrat
+                    Charlene Young                                                 Independent American
+
+*Incumbent
+                                                     2026 General Election: Nevada Legislative Candidates | July 2026 | p. 2
+                              NEVADA STATE ASSEMBLY CANDIDATES
+  DISTRICT             NAME                                                                     PARTY
+    6                  Katherine “Katie” Duncan                                                 No Political Party
+                       Jovan Alexander Jackson*                                                 Democrat
+"""
+        self.assertEqual(states.nevada(text), [
+            (S, "District 2", "Edgar Flores*", "Democrat"), (S, "District 13", "Matthew R. Buehler", "Republican"),
+            (S, "District 13", "Richard “Skip” Daly*", "Democrat"), (S, "District 13", "Charlene Young", "Independent American"),
+            ("Assembly", "District 6", "Katherine “Katie” Duncan", "No Political Party"),
+            ("Assembly", "District 6", "Jovan Alexander Jackson*", "Democrat")])
+
+    def test_wyoming(self):
+        text = """ Office Sought
+             Party Affiliation            Candidate Name                            Mailing Address                     Date Filed         Campaign Telephone
+                                                                                    City, State & ZIP           Date Withdrawn             Email
+GOVERNOR
+
+           Republican                    Eric Barlow                               1625 A Buffalo Cut Across Rd       05/16/2026         307-209-4846
+                                                                                   Gillette, WY 82718                                    eric@barlowforwyo.com
+STATE SENATOR 05
+
+           Republican                    Lauren Schoenfeld                        2325 Torben Ct                      05/14/2026        307-922-6136
+                                                                                  Cheyenne, WY 82009                                    laurenschoenfeld307@gmail.com
+Wednesday, September 09, 2026 - 11:20AM                                                                                                                                          Page 2 of 19
+           Democratic                    Ted Hanlon                               808 West Dale Blvd                  05/15/2026        307-275-9556
+                                                                                  Cheyenne, WY 82009                                    ted@hanlon4wyoming.com
+STATE REPRESENTATIVE 62
+
+           Republican                    Gone Person                              1 Main St                           05/15/2026        307-555-0100
+                                                                                  Casper, WY 82601            06/01/2026                gone@example.com
+           Democratic                    Kept Person                              2 Main St                           05/15/2026        307-555-0101
+                                                                                  Casper, WY 82601                                      kept@example.com
+JUDGE OF THE CHANCERY COURT                                                                                                                                         Ben Burningham
+           Retain                        Ben Burningham                           3 Main St                           05/15/2026
+"""
+        self.assertEqual(states.wyoming(text), [
+            (S, "District 5", "Lauren Schoenfeld", "Republican"), (S, "District 5", "Ted Hanlon", "Democratic"),
+            (H, "District 62", "Kept Person", "Democratic")])
+
     def test_new_mexico(self):
         head = ["Contest", "Contest", "District", "Filing County", "Name", "Party", "Ballot Order", "Status"]
         def tr(*c):

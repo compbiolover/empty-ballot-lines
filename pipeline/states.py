@@ -5,19 +5,26 @@ November 2026 general election, already limited to qualified, on-ballot candidat
 Chamber names match build.CHAMBERS. Where a reader returns rows for a chamber, they
 replace that chamber's Wikipedia data.
 """
+import io
+import logging
 import re
 import urllib.request
 
 from bs4 import BeautifulSoup
+from pypdf import PdfReader
 
 UA = "empty-ballot-dashboard/1.0 (civic data project)"
+logging.getLogger("pypdf").setLevel(logging.ERROR)  # font-encoding chatter on every PDF page
 SENATE, HOUSE = "Senate", "House of Representatives"
 
 
 def get(url):
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=60) as r:
-        return r.read().decode(r.headers.get_content_charset() or "utf-8", "replace")
+        body = r.read()
+        if body.startswith(b"%PDF"):  # layout mode keeps each table row on one line
+            return "\n".join(p.extract_text(extraction_mode="layout") for p in PdfReader(io.BytesIO(body)).pages)
+        return body.decode(r.headers.get_content_charset() or "utf-8", "replace")
 
 
 def txt(el):
@@ -79,6 +86,49 @@ def minnesota(text):
     return rows
 
 
+def nevada(text):
+    """Legislative Counsel Bureau roster PDF: District | Name | Party, one blank-line group per district.
+    The district number sits on any one line of its group (the middle one for three candidates)."""
+    rows, chamber, group, district = [], None, [], ""
+
+    def flush():
+        nonlocal district
+        district = next((d for d, _, _ in group if d), district)  # no number: a district split across pages
+        rows.extend((chamber, f"District {district}", name, p) for _, name, p in group)
+        group.clear()
+
+    for line in text.splitlines():
+        head = re.search(r"NEVADA STATE (SENATE|ASSEMBLY) CANDIDATES", line)
+        m = re.match(r"^\s*(\d+)?\s{2,}(\S.*?)\s{3,}([A-Z][A-Za-z ]+?)\s*$", line)
+        if head or not line.strip():
+            if group:
+                flush()
+            if head:
+                chamber = SENATE if head.group(1) == "SENATE" else "Assembly"
+        elif chamber and m and not re.search(r"\bNAME\b.*\bPARTY\b", line):  # not the column header
+            group.append(m.groups(""))
+    if group:
+        flush()
+    return rows
+
+
+def wyoming(text):
+    """Secretary of State roster PDF: an 'STATE SENATOR 01' heading per office, then two lines per candidate,
+    Party | Name | Address | Date filed, and below it City | Date withdrawn."""
+    rows, chamber, district = [], None, ""
+    for line in text.splitlines():
+        if line[:1].strip() and not re.match(r"\w+day, ", line):  # an office heading, not the page footer's date
+            m = re.match(r"STATE (SENATOR|REPRESENTATIVE) (\d+)\s*$", line)
+            chamber = (SENATE if m.group(1) == "SENATOR" else HOUSE) if m else None
+            district = m.group(2).lstrip("0") if m else ""
+            continue
+        m = re.match(r"^\s{5,20}(\S.*?)\s{3,}(\S.*?)\s{3,}.*?\d\d/\d\d/\d{4}", line)
+        if chamber and m:
+            rows.append((chamber, f"District {district}", m.group(2), m.group(1)))
+        elif chamber and rows and re.search(r"\d\d/\d\d/\d{4}", line):
+            rows.pop()  # a date on the city line is the date withdrawn
+    return rows
+
 
 def new_mexico(html):
     """The candidate grid; columns found by header name."""
@@ -104,6 +154,8 @@ SOURCES = {
                      "?elecid=20261103-GEN&OfficeGroup=LEG&StatusCode=ALL&OrderBy=OFF"]),
     "MN": (minnesota, ["https://electionresultsfiles.sos.mn.gov/20261103/LegislativeByDistrict.txt",
                        "https://electionresultsfiles.sos.mn.gov/20261103/stsenate.txt"]),
+    "NV": (nevada, ["https://www.leg.state.nv.us/Division/Research/Documents/CandidatesList_2026General.pdf"]),
+    "WY": (wyoming, ["https://sos.wyo.gov/Elections/Docs/2026/2026_WY_General_Election_Candidates.pdf"]),
     "NM": (new_mexico, ["https://candidateportal.servis.sos.state.nm.us/CandidateList.aspx"]),
 }
 
