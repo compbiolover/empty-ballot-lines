@@ -1,2 +1,2 @@
 beautifulsoup4>=4.12
-pypdf>=5
+pypdf>=7.0.0
